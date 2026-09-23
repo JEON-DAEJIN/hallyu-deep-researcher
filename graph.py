@@ -46,6 +46,8 @@ BASE_DIR = Path(__file__).parent
 CONFIG = json.loads((BASE_DIR / "config.json").read_text(encoding="utf-8"))
 CORPUS_PATH = BASE_DIR / "data" / "corpus.json"
 CARD_CHARS = 250
+EXCERPT_HEAD_CHARS = 6000  # 조사관에게 기본으로 보여주는 문서 앞부분 분량
+EXCERPT_KEYWORD_WINDOW = 1500  # 앞부분에 핵심어가 없을 때, 핵심어 주변으로 추가로 보여주는 분량
 
 # 절제실험 기본값 — 전부 켜짐(기본 파이프라인). ablation.py가 하나씩 False로 바꿔 넘긴다.
 ABLATION_DEFAULTS = {"배정": True, "역할": True, "재위임": True, "구역": True}
@@ -58,6 +60,31 @@ def load_corpus():
 
 DOCS, LINKS = load_corpus()
 TOTAL_CORPUS_CHARS = sum(len(t) for t in DOCS.values())
+
+
+def build_excerpt(text: str, question: str, section: str) -> str:
+    """조사관에게 보여줄 문서 발췌를 만든다.
+
+    [실행 중 발견한 문제 — REPORT.md 회고 참고] 처음엔 모든 문서를 앞 6000자로만 잘라 보여줬는데,
+    "대한민국의 사드 배치 논란"(23,216자) 문서는 "한한령"이라는 단어가 22,763번째 글자, 즉 문서
+    거의 끝부분에서야 처음 등장해 6000자 컷 안에 전혀 들어오지 못했다. 그 결과 이 문서를 정확히
+    배정받고도(배정 자체는 성공) "관련 없음"으로 조사관이 되돌려 '위기와 대응' 절이 통째로 비었다.
+    앞부분에 질문/절 제목에서 뽑은 핵심어가 안 보이면, 문서 뒷부분에서 그 핵심어를 찾아 주변 문맥을
+    덧붙인다 — 문서 전체를 다 보여주지 않으면서도(도구설계원칙 3, 비용 통제) 핵심 부분을 놓치지 않는다."""
+    if len(text) <= EXCERPT_HEAD_CHARS:
+        return text
+    head = text[:EXCERPT_HEAD_CHARS]
+    # 길이가 긴(=더 구체적인) 핵심어부터 찾는다 — "대응"·"위기"처럼 흔한 짧은 단어를 먼저 찾으면
+    # 진짜 관련 없는 부분(예: 다른 사건의 "정부 대응" 서술)에서 우연히 걸려 엉뚱한 발췌를 반환한다.
+    raw_keywords = [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", f"{section} {question}") if len(w) >= 2]
+    keywords = sorted(dict.fromkeys(raw_keywords), key=len, reverse=True)  # 중복 제거하되 등장 순서는 유지
+    for kw in keywords:
+        idx = text.find(kw, EXCERPT_HEAD_CHARS)
+        if idx != -1:
+            start = max(EXCERPT_HEAD_CHARS, idx - 300)
+            end = min(len(text), idx + EXCERPT_KEYWORD_WINDOW)
+            return head + "\n...(중략, 아래는 핵심어 '" + kw + "' 주변 발췌)...\n" + text[start:end]
+    return head
 
 
 def call_llm(system: str, user: str, json_mode: bool = False, retries: int = 3) -> str:
@@ -234,14 +261,21 @@ JSON으로만 답하라:
         text = DOCS.get(title, "")
         if not text:
             return "관련 없음"
+        # [실행 중 발견한 문제 — REPORT.md 회고 참고] 처음엔 "절 주제와 관련된 내용만" 요약하라고
+        # 시켰더니, SM/JYP/YG 기획사 문서 본문조차 "기획사 사업 모델 비교"라는 절 주제에 정확히
+        # 대응하는 문장이 없다는 이유로 gpt-4o-mini가 거의 전부 "관련 없음"으로 답해버려 9개 질문 중
+        # 7개가 근거 0건으로 실패했다. 절 주제 문구와 글자 그대로 안 겹쳐도 답변의 배경/근거로 쓸 수
+        # 있으면 요약하도록 기준을 낮추고, "관련 없음"은 질문의 전체 주제와 아예 무관할 때만 쓰게 했다.
         prompt = f"""질문: {question}
 절 주제: {section}
 
-아래 문서를 읽고 이 절 주제와 관련된 내용을 여섯 문장 이내로 요약하라.
-관련이 없으면 "관련 없음"이라고만 답하라.
+아래 문서에서 이 질문/절 주제를 다루는 보고서에 배경·근거로 쓸 수 있는 사실(역사·조직·정책·사건·구조 등)을
+최대한 찾아 여섯 문장 이내로 요약하라. 절 주제와 완벽히 같은 표현이 아니어도, 답변을 뒷받침하는 데
+조금이라도 도움이 되면 요약하라. 문서에 없는 내용은 지어내지 마라.
+이 문서가 질문의 전체 주제(한류/케이팝/한국 콘텐츠 산업)와 아예 무관할 때만 "관련 없음"이라고 답하라.
 
 문서 «{title}»:
-{text[:6000]}"""
+{build_excerpt(text, question, section)}"""
         return call_llm("너는 문서를 읽고 핵심만 요약하는 조사관이다.", prompt)
 
     def researcher(payload: dict) -> dict:

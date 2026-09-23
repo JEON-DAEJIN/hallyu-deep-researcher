@@ -13,7 +13,7 @@
 import json
 from pathlib import Path
 
-from graph import CONFIG, DOCS, LINKS, TOTAL_CORPUS_CHARS, call_llm, extract_json  # noqa: F401 (재사용)
+from graph import CONFIG, DOCS, LINKS, TOTAL_CORPUS_CHARS, build_excerpt, call_llm, extract_json  # noqa: F401
 import re
 
 BUDGET = CONFIG["절수"] * CONFIG["절당예산"]  # 4*4 = 16, 팀 전체 예산과 동일
@@ -22,13 +22,16 @@ ROOT_SEED = "한류"  # 팀 코디네이터가 카드에서 고를 법한 가장
 
 def read_one(title: str, question: str) -> str:
     text = DOCS.get(title, "")
+    # graph.py의 read_one과 동일한 완화된 기준을 쓴다 (공정성 — 팀만 관대한 기준을 쓰면 안 됨).
     prompt = f"""질문: {question}
 
-아래 문서를 읽고 이 질문과 관련된 내용을 여섯 문장 이내로 요약하라.
-관련이 없으면 "관련 없음"이라고만 답하라.
+아래 문서에서 이 질문을 다루는 보고서에 배경·근거로 쓸 수 있는 사실(역사·조직·정책·사건·구조 등)을
+최대한 찾아 여섯 문장 이내로 요약하라. 질문과 완벽히 같은 표현이 아니어도, 답변을 뒷받침하는 데
+조금이라도 도움이 되면 요약하라. 문서에 없는 내용은 지어내지 마라.
+이 문서가 질문의 전체 주제와 아예 무관할 때만 "관련 없음"이라고 답하라.
 
 문서 «{title}»:
-{text[:6000]}"""
+{build_excerpt(text, question, "")}"""
     return call_llm("너는 문서를 읽고 핵심만 요약하는 리서처다.", prompt)
 
 

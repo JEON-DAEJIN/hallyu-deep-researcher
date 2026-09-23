@@ -23,9 +23,14 @@ def load_result(path: Path) -> dict:
 
 
 def compute(result: dict) -> dict:
-    sections = {}
-    for sec in result["sections"]:
-        sections[sec["절"]] = sec  # 최신본만 (재위임 시 뒤에 온 것이 우선 — graph.py가 정책 적용 후 넘겨준 리스트)
+    # [실행 중 발견한 버그] 예전에는 여기서 "sections[절] = sec"으로 단순히 마지막 것을 덮어썼다.
+    # 그러면 graph.py가 재위임 시 적용한 "인용 수가 줄면 이전 원고 유지" 정책과 무관하게, 이 지표
+    # 계산기만 몰래 "무조건 최신본"으로 되돌아가 버려 실제 최종 보고서(더 나은 이전 원고를 채택)와
+    # 지표가 서로 다른 걸 재는 모순이 생겼다(질문4에서 실제로 재현: 최종 보고서에는 인용 5·6개짜리
+    # 절이 버젓이 들어갔는데 이 함수는 근거율 0으로 계산했었다). graph.py와 동일한 병합 함수를 써서
+    # "실제로 채택된 원고"를 기준으로 지표를 계산하도록 고쳤다.
+    from graph import merge_sections
+    sections = merge_sections(result["sections"])
 
     total_sentences = 0
     grounded_sentences = 0
