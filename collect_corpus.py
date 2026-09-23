@@ -16,6 +16,7 @@ N042/N043 부록의 "위키백과 코퍼스 수집 프롬프트" 스펙과, N042
 [도구설계원칙 2 — 실패시 대응] 429/5xx는 지수 백오프로 재시도. 그래도 실패하면
 해당 문서만 건너뛰고 failed_docs에 기록한다 — 전체 수집을 중단하지 않는다.
 """
+import hashlib
 import json
 import re
 import time
@@ -48,15 +49,24 @@ EXCLUDE_PATTERNS = [
 
 # 거의 모든 위키 문서가 참고/외부링크로 걸어서 진짜 허브가 되는 완전 무관 문서들
 # (N042 5장 "데이터 오염" 사례와 동일한 문제 — 미리 걸러둔다)
+# [1차 수집 후 사람 검수로 추가] 웨이백 머신(참고주 각주 단골), X(옛 트위터, 이미 "트위터"는 있었으나
+# 리브랜딩 표제어로 별도 문서가 잡힘) — 둘 다 거의 모든 문서가 참고/외부링크로 거는 국민 허브다.
 GENERIC_STOPLIST = {
     "국제 표준 도서 번호", "다음", "카카오 (기업)", "네이버", "구글", "위키백과", "위키미디어 공용",
     "유튜브", "인스타그램", "트위터", "페이스북", "나무위키",
+    "웨이백 머신", "X (소셜 네트워크)",
 }
 
 # 코퍼스 목적(한류 콘텐츠 산업)과 무관하거나 너무 넓은 국가/일반 개념 허브
+# [1차 수집 후 사람 검수로 추가] 서울특별시(지역 허브) · 영어/일본어/한국어(언어 허브 — 거의 모든
+# 문서가 "OO어로 번역되었다"는 식으로 링크를 건다) · KBS/SBS(한류 콘텐츠 자체가 아니라 모든 장르를
+# 다루는 방송사 그 자체 — 너무 넓은 허브. "SBS 인기가요"·"엠넷"처럼 케이팝 전용 채널/차트는 그대로 둔다)
 OUT_OF_SCOPE = {
     "대한민국", "미국", "일본", "중국", "북한", "아시아", "세계",
     "텔레비전", "영화", "음악", "대중문화", "인터넷", "자본주의",
+    "서울특별시", "영어", "일본어", "한국어", "KBS", "SBS",
+    # [2차 수집 후 사람 검수로 추가] 경기도 — 아이돌 출신지 각주로 걸린 일반 행정구역 허브
+    "경기도",
 }
 
 
@@ -121,12 +131,17 @@ def main():
     all_links: dict[str, list[str]] = {}
     visited = set()
     failed_docs: list[str] = []
+    # 리다이렉트 변형 제목(예: "YG엔터테인먼트" vs "YG 엔터테인먼트")이 서로 다른 문서로 중복 저장되는
+    # 것을 막는다 — 1차 수집에서 실제로 겪은 문제(내용이 100% 동일한 문서 두 벌이 다른 키로 저장됨).
+    content_signatures: dict[str, str] = {}
 
     if OUT_PATH.exists():
         prev = json.loads(OUT_PATH.read_text(encoding="utf-8"))
         docs.update(prev.get("docs", {}))
         all_links.update(prev.get("links", {}))
         visited.update(docs.keys())
+        for t, text in docs.items():
+            content_signatures[hashlib.sha1(text[:500].encode("utf-8")).hexdigest()] = t
         print(f"[재개] 기존 corpus.json에서 {len(docs)}건 불러옴")
 
     def fetch_and_store(title: str) -> bool:
@@ -138,12 +153,17 @@ def main():
             time.sleep(1.0)
             if not text or len(text) < MIN_CHARS:
                 return False
+            sig = hashlib.sha1(text[:500].encode("utf-8")).hexdigest()
+            if sig in content_signatures:
+                print(f"  건너뜀(중복 문서, 이미 '{content_signatures[sig]}'로 저장됨): {title}")
+                return False
             links = get_links(title)
             time.sleep(1.0)
         except requests.exceptions.HTTPError as e:
             print(f"  건너뜀(오류): {title} — {e}")
             failed_docs.append(title)
             return False
+        content_signatures[sig] = title
         docs[title] = text
         all_links[title] = links
         print(f"  저장: {title} ({len(text):,}자, 링크 {len(links)}개)")
